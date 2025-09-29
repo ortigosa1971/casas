@@ -9,6 +9,24 @@ const Database = require('better-sqlite3');
 const util = require('util');
 
 const app = express();
+
+// ====== Utilidades de respuesta JSON seguras ======
+function sendJson(res, status, payload) {
+  res.set('Content-Type', 'application/json; charset=utf-8');
+  if (payload === undefined || payload === null) {
+    return res.status(status || 204).end();
+  }
+  return res.status(status || 200).json(payload);
+}
+
+async function fetchAsText(url, options = {}) {
+  const r = await fetch(url, { ...options, headers: { Accept: 'application/json', ...(options.headers||{}) } });
+  const text = await r.text();
+  const ct = (r.headers.get('content-type') || '').toLowerCase();
+  const isJson = ct.includes('application/json') || ct.includes('application/problem+json');
+  return { ok: r.ok, status: r.status, text, isJson };
+}
+
 app.set('trust proxy', 1);
 
 // ====== Carpetas ======
@@ -204,7 +222,52 @@ app.post('/admin/forzar-logout', async (req, res) => {
 
 // ====== Arranque ======
 const PORT = process.env.PORT || 8080;
+
+// ====== API: Forecast (PROXY) ======
+app.get('/api/forecast', async (req, res) => {
+  try {
+    const lat = req.query.lat || process.env.DEFAULT_LAT || "40.4168";
+    const lon = req.query.lon || process.env.DEFAULT_LON || "-3.7038";
+    const apiKey = process.env.WEATHER_API_KEY;
+    if (!apiKey) {
+      return sendJson(res, 500, { error: "Falta WEATHER_API_KEY" });
+    }
+
+    const url = new URL("https://api.weather.com/v3/wx/forecast/daily/5day");
+    url.searchParams.set("geocode", `${lat},${lon}`);
+    url.searchParams.set("format", "json");
+    url.searchParams.set("language", "es-ES");
+    url.searchParams.set("units", "m");
+    url.searchParams.set("apiKey", apiKey);
+
+    const { ok, status, text, isJson } = await fetchAsText(url.toString(), { method: "GET" });
+
+    if (!ok) {
+      let body = text;
+      try { if (isJson) body = JSON.parse(text); } catch {}
+      return sendJson(res, status, { error: "Weather API error", status, body });
+    }
+
+    if (!text) return sendJson(res, 204, null);
+
+    let data = text;
+    if (isJson) {
+      try { data = JSON.parse(text); } catch (e) {
+        return sendJson(res, 502, { error: "Respuesta JSON inválida del proveedor", detail: String(e), fragment: text.slice(0, 200) });
+      }
+    }
+    return sendJson(res, 200, data);
+  } catch (err) {
+    console.error(err);
+    return sendJson(res, 500, { error: "Fallo interno", detail: String(err) });
+  }
+});
+
+
 app.listen(PORT, () => console.log(`🚀 http://0.0.0.0:${PORT} — reemplazo automático de sesión activado`));
+
+
+
 
 
 
